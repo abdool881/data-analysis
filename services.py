@@ -26,6 +26,11 @@ class ShopError(ValueError):
     """A mistake the owner can understand and fix. Safe to show on the screen."""
 
 
+def _require_whole_quantity(quantity: int) -> None:
+    if isinstance(quantity, bool) or not isinstance(quantity, int):
+        raise ShopError("Quantity must be a whole number.")
+
+
 # ---------------------------------------------------------------- finding things
 def get_product(session: Session, shop_id: int, name: str) -> Product:
     """Find a product by name, ignoring capital letters and extra spaces."""
@@ -87,10 +92,12 @@ def stock_levels(session: Session, shop_id: int) -> list[StockLine]:
 def add_product(session: Session, shop_id: int, name: str, unit_cost: float, selling_price: float,
                 opening_stock: int = 0, reorder_level: int = 0, lead_time_days: int = 7,
                 expiry_date: date | None = None) -> Product:
+    _require_whole_quantity(opening_stock)
+    _require_whole_quantity(reorder_level)
     if unit_cost < 0 or selling_price < 0:
         raise ShopError("Prices cannot be negative.")
-    if opening_stock < 0:
-        raise ShopError("Opening stock cannot be negative.")
+    if opening_stock < 0 or reorder_level < 0:
+        raise ShopError("Opening stock and reorder level cannot be negative.")
     try:
         get_product(session, shop_id, name)
     except ShopError:
@@ -116,8 +123,9 @@ class SaleResult:
 
 def record_sale(session: Session, product: Product, quantity: int, unit_price: float | None = None,
                 sold_at: datetime | None = None, customer: Customer | None = None) -> SaleResult:
-    if quantity == 0:
-        raise ShopError("Quantity cannot be zero.")
+    _require_whole_quantity(quantity)
+    if quantity <= 0:
+        raise ShopError("Sale quantity must be positive. Use record_return() for returned items.")
     if customer is not None and customer.shop_id != product.shop_id:
         raise ShopError("Customer and product must belong to the same shop.")
     price = product.selling_price if unit_price is None else unit_price       # pre-fill the usual price
@@ -138,16 +146,72 @@ def record_sale(session: Session, product: Product, quantity: int, unit_price: f
     return SaleResult(sale, warning)
 
 
+def record_return(session: Session, original_sale: Sale, quantity: int,
+                  returned_at: datetime | None = None) -> SaleResult:
+    _require_whole_quantity(quantity)
+    if quantity <= 0:
+        raise ShopError("Return quantity must be positive.")
+    if original_sale.id is None:
+        raise ShopError("A return must reference a saved sale.")
+
+    original_sale = session.get(Sale, original_sale.id)
+    if original_sale is None:
+        raise ShopError("The original sale was not found.")
+    if original_sale.quantity <= 0 or original_sale.return_of_sale_id is not None:
+        raise ShopError("Only an original sale can be returned.")
+
+    legacy_return = session.scalar(
+        select(Sale.id).where(
+            Sale.shop_id == original_sale.shop_id,
+            Sale.product_id == original_sale.product_id,
+            Sale.quantity < 0,
+            Sale.return_of_sale_id.is_(None),
+        ).limit(1)
+    )
+    if legacy_return is not None:
+        raise ShopError("Unlinked legacy returns exist for this product; reconcile them before recording another return.")
+
+    already_returned = session.scalar(
+        select(func.coalesce(func.sum(-Sale.quantity), 0)).where(
+            Sale.return_of_sale_id == original_sale.id
+        )
+    )
+    if quantity + already_returned > original_sale.quantity:
+        raise ShopError("Return quantity exceeds the quantity sold and not yet returned.")
+
+    returned_at = returned_at or datetime.now()
+    if returned_at < original_sale.sold_at:
+        raise ShopError("Return time cannot be before the original sale.")
+
+    sale_return = Sale(
+        shop_id=original_sale.shop_id,
+        product_id=original_sale.product_id,
+        customer_id=original_sale.customer_id,
+        return_of_sale_id=original_sale.id,
+        sold_at=returned_at,
+        quantity=-quantity,
+        unit_price_kobo=original_sale.unit_price_kobo,
+        unit_cost_kobo=original_sale.unit_cost_kobo,
+    )
+    session.add(sale_return)
+    session.flush()
+    return SaleResult(sale_return)
+
+
 def record_restock(session: Session, product: Product, quantity: int, unit_cost: float,
                    received_on: date | None = None, expiry_date: date | None = None,
                    supplier: str | None = None) -> Restock:
+    _require_whole_quantity(quantity)
     if quantity <= 0:
         raise ShopError("A delivery must have a quantity above zero.")
     if unit_cost < 0:
         raise ShopError("Cost cannot be negative.")
-    restock = Restock(shop_id=product.shop_id, product_id=product.id, received_on=received_on or date.today(),
+    received_on = received_on or date.today()
+    restock = Restock(shop_id=product.shop_id, product_id=product.id, received_on=received_on,
                       quantity=quantity, unit_cost=unit_cost, kind="purchase", expiry_date=expiry_date, supplier=supplier)
-    product.unit_cost = unit_cost        # the newest price we paid becomes the cost for FUTURE sales
+    if received_on >= product.unit_cost_as_of:
+        product.unit_cost = unit_cost
+        product.unit_cost_as_of = received_on
     session.add(restock)
     session.flush()
     return restock
@@ -156,6 +220,7 @@ def record_restock(session: Session, product: Product, quantity: int, unit_cost:
 def record_adjustment(session: Session, product: Product, quantity: int, reason: str,
                       adjusted_on: date | None = None, note: str | None = None) -> StockAdjustment:
     """quantity is NEGATIVE when stock is lost, POSITIVE when found."""
+    _require_whole_quantity(quantity)
     if quantity == 0:
         raise ShopError("Adjustment cannot be zero.")
     if reason in {"damaged", "expired", "stolen"} and quantity > 0:

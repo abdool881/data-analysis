@@ -60,6 +60,7 @@ class Product(Base):
     name: Mapped[str] = mapped_column(String(120))
     name_key: Mapped[str] = mapped_column(String(120))                  # filled in automatically
     unit_cost_kobo: Mapped[int] = mapped_column(Integer)                # current buy price
+    unit_cost_as_of: Mapped[date] = mapped_column(Date, default=date.today)
     selling_price_kobo: Mapped[int] = mapped_column(Integer)            # default sell price
     reorder_level: Mapped[int] = mapped_column(Integer, default=0)
     lead_time_days: Mapped[int] = mapped_column(Integer, default=7)
@@ -101,8 +102,9 @@ class Sale(Base):
     shop_id: Mapped[int] = mapped_column(ForeignKey("shops.id"))
     product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), index=True)
     customer_id: Mapped[int | None] = mapped_column(ForeignKey("customers.id"))
+    return_of_sale_id: Mapped[int | None] = mapped_column(ForeignKey("sales.id"), index=True)
     sold_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)   # date AND time
-    quantity: Mapped[int] = mapped_column(Integer)                               # negative = a return
+    quantity: Mapped[int] = mapped_column(Integer)                               # negative = return of return_of_sale_id
     unit_price_kobo: Mapped[int] = mapped_column(Integer)                        # price actually charged
     unit_cost_kobo: Mapped[int] = mapped_column(Integer)                         # cost at the time of sale
 
