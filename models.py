@@ -9,6 +9,7 @@ What changed since Step 1:
 from __future__ import annotations
 
 from datetime import date, datetime
+from decimal import Decimal, ROUND_HALF_UP
 
 from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Index, Integer, String, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, validates
@@ -17,7 +18,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship,
 # ---------- money helpers ----------
 def to_kobo(naira: float) -> int:
     """₦300.50 -> 30050 kobo. Whole numbers never have rounding mistakes."""
-    return int(round(naira * 100))
+    return int((Decimal(str(naira)) * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
 
 
 def naira_view(kobo_column: str):

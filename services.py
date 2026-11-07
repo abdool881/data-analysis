@@ -118,6 +118,8 @@ def record_sale(session: Session, product: Product, quantity: int, unit_price: f
                 sold_at: datetime | None = None, customer: Customer | None = None) -> SaleResult:
     if quantity == 0:
         raise ShopError("Quantity cannot be zero.")
+    if customer is not None and customer.shop_id != product.shop_id:
+        raise ShopError("Customer and product must belong to the same shop.")
     price = product.selling_price if unit_price is None else unit_price       # pre-fill the usual price
     if price < 0:
         raise ShopError("Price cannot be negative.")
@@ -156,6 +158,10 @@ def record_adjustment(session: Session, product: Product, quantity: int, reason:
     """quantity is NEGATIVE when stock is lost, POSITIVE when found."""
     if quantity == 0:
         raise ShopError("Adjustment cannot be zero.")
+    if reason in {"damaged", "expired", "stolen"} and quantity > 0:
+        raise ShopError(f"{reason.capitalize()} adjustments must reduce stock.")
+    if reason == "found" and quantity < 0:
+        raise ShopError("Found adjustments must increase stock.")
     try:
         adj = StockAdjustment(shop_id=product.shop_id, product_id=product.id, adjusted_on=adjusted_on or date.today(),
                               quantity=quantity, reason=reason, note=note)
