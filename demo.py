@@ -1,51 +1,62 @@
-"""Run:  python demo_step2.py"""
+"""Run:  python demo_step3.py
+Builds two weeks of a pretend pharmacy with planted stories, then checks the engine finds them:
+  * Amoxicillin: price raised 25%  -> fewer units sold
+  * Artemether:  runs out of stock on 3 Nov
+  * Cough Syrup: sells more (a bright spot)
+  * Paracetamol: normal, but a customer returns 2 boxes
+"""
+from datetime import date, datetime, timedelta
+
+import pandas as pd
+
+from analytics import by_period, product_ranking, sales_frame, summary, weekday_pattern
 from database import init_db
 from models import Shop
-from services import (ShopError, add_product, current_stock, get_or_create_customer, get_product,
-                      record_adjustment, record_restock, record_sale, stock_levels)
+from services import add_product, get_product, record_restock, record_return, record_sale
+from why import compare_periods, stock_history
 
+pd.set_option("display.width", 220); pd.set_option("display.max_columns", 20); pd.set_option("display.max_colwidth", 90)
 Session = init_db("sqlite:///:memory:")
 
 with Session() as s:
-    shop = Shop(name="Grace Pharmacy")
-    s.add(shop); s.flush()
+    shop = Shop(name="Grace Pharmacy"); s.add(shop); s.flush()
+    for name, cost, price in (("Paracetamol", 180, 300), ("Amoxicillin", 1000, 1500), ("Artemether", 2000, 2800), ("Cough Syrup", 1500, 2200)):
+        add_product(s, shop.id, name, cost, price)
+    P = {p: get_product(s, shop.id, p) for p in ("Paracetamol", "Amoxicillin", "Artemether", "Cough Syrup")}
+    for name, qty in (("Paracetamol", 500), ("Amoxicillin", 300), ("Artemether", 30), ("Cough Syrup", 300)):
+        record_restock(s, P[name], qty, P[name].unit_cost, received_on=date(2026, 10, 20))
 
-    # 1. Set up two products, each with the stock we start with
-    add_product(s, shop.id, "Paracetamol 500mg", unit_cost=180, selling_price=300, opening_stock=200, reorder_level=50)
-    add_product(s, shop.id, "Amoxicillin 500mg", unit_cost=1000, selling_price=1500, opening_stock=50, reorder_level=20)
-    para = get_product(s, shop.id, "  paracetamol 500MG ")        # capitals and spaces don't matter
-    amox = get_product(s, shop.id, "Amoxicillin 500mg")
-    print("1. Start:", {l.name: l.stock for l in stock_levels(s, shop.id)})
-
-    # 2. A sale: we only say WHAT and HOW MANY. The price fills itself in.
-    ada = get_or_create_customer(s, shop.id, "0803 111 2222", "Ada")
-    first = record_sale(s, para, 3, customer=ada).sale
-    print(f"2. Sold 3 at ₦{first.unit_price:.0f} each, cost remembered ₦{first.unit_cost:.0f}, profit ₦{first.profit:.0f}")
-
-    # 3. A delivery arrives, and the supplier charged MORE this time
-    record_restock(s, para, 100, unit_cost=200)
-    print(f"3. Product cost is now ₦{para.unit_cost:.0f}, but the OLD sale still says ₦{first.unit_cost:.0f}")
-
-    # 4. Five boxes expired
-    record_adjustment(s, para, -5, "expired")
-
-    # 5. Count what's left: 200 - 3 + 100 - 5
-    print("5. Paracetamol left:", current_stock(s, para.id), "(should be 292)")
-
-    # 6. Selling more than we have: allowed, but we get a warning
-    result = record_sale(s, amox, 80)
-    print("6. Warning:", result.warning)
-
-    # 7. Mistakes the owner can understand
-    for bad in (lambda: get_product(s, shop.id, "Panadol"),
-                lambda: record_sale(s, para, 0),
-                lambda: record_adjustment(s, para, -1, "vibes"),
-                lambda: add_product(s, shop.id, "PARACETAMOL 500MG", 1, 2)):
-        try:
-            bad()
-        except ShopError as e:
-            print("7. Friendly error:", e)
-
+    return_target = None
+    for i in range(14):                                    # 25 Oct ... 7 Nov (week 1 = last week, week 2 = this week)
+        day = date(2026, 10, 25) + timedelta(days=i)
+        at = datetime(day.year, day.month, day.day, 11)
+        this_week = i >= 7
+        sale = record_sale(s, P["Paracetamol"], 10, sold_at=at).sale
+        if day == date(2026, 11, 2):
+            return_target = sale
+        record_sale(s, P["Amoxicillin"], 2 if this_week else 3, unit_price=1875 if this_week else 1500, sold_at=at)
+        record_sale(s, P["Cough Syrup"], 5 if this_week else 4, sold_at=at)
+        if i <= 9:                                         # Artemether: stock of 30 is gone after 3 Nov
+            record_sale(s, P["Artemether"], 3, sold_at=at)
+    record_return(s, return_target, 2, returned_at=datetime(2026, 11, 4, 15))
     s.commit()
-    print("8. Everything below its reorder level:",
-          [l.name for l in stock_levels(s, shop.id) if l.below_reorder_level])
+
+    df = sales_frame(s, shop.id)
+    print("=== PART 1: WHAT happened ===")
+    print("Headline numbers:", {k: round(v, 1) if isinstance(v, float) else v for k, v in summary(df).items()})
+    print("\nRevenue per week:\n", by_period(df, "W").round({"revenue": 0, "profit": 0, "change_pct": 0}).to_string(index=False))
+    print("\nProducts, best to worst:\n", product_ranking(df).round(1).to_string(index=False))
+
+    print("\n=== PART 2: WHY did it happen? (7 days to 7 Nov vs the 7 days before) ===")
+    stock = stock_history(s, shop.id, end="2026-11-07")
+    r = compare_periods(df, end="2026-11-07", days=7, stock=stock)
+    print(f"Sales: ₦{r['before']['revenue']:,.0f} -> ₦{r['now']['revenue']:,.0f}  ({r['change']:+,.0f}, {r['change_pct']:+.1f}%)")
+    print(r["table"][["product", "change", "price_effect", "volume_effect", "stockout_days", "reason"]].round(0).to_string(index=False))
+
+    t = r["table"].set_index("product")
+    assert abs(t["change"].sum() - r["change"]) < 0.01, "product changes must add up to the total change"
+    assert abs((t["price_effect"] + t["volume_effect"]).sum() - r["change"]) < 0.01, "price + volume must add up"
+    assert t.loc["Artemether", "stockout_days"] == 5 and "ran out of stock" in t.loc["Artemether", "reason"].lower()
+    assert "price rose 25%" in t.loc["Amoxicillin", "reason"].lower()
+    assert t.loc["Amoxicillin", "price_effect"] > 0 > t.loc["Amoxicillin", "volume_effect"]
+    print("\nAll checks passed: the engine found the price rise and the stock-out.")
