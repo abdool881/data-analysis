@@ -100,6 +100,27 @@ uvicorn retail_ops.api:app --host 0.0.0.0 --port 8000
 
 `POST /v1/shops` requires the `X-Signup-Token` onboarding secret. It returns a randomly generated shop API key once; send it as `Authorization: Bearer <key>` for shop routes. Keys are stored as hashes and can be rotated at `POST /v1/shop/api-key/rotate`. Every data endpoint scopes its records to the authenticated shop. Set `DATABASE_URL` to PostgreSQL for deployment; SQLite remains useful for local development. Connection pool limits are configurable with `DB_POOL_SIZE`, `DB_MAX_OVERFLOW`, `DB_POOL_TIMEOUT`, and `DB_POOL_RECYCLE`.
 
-Available endpoint groups include inventory/products, customers, sales/returns, debt balances and payment history, sales/product analytics, the combined dashboard, and alert processing/listing. Analytics requests are bounded to 366 days and default to the most recent 90 days. `POST /v1/alerts/run` should be invoked on a schedule; `GET /v1/alerts/due` supplies notifications eligible to send. Delivery (WhatsApp/SMS/email), a browser UI, and user roles are not included yet.
+Available endpoint groups include inventory/products, customers, sales/returns, debt balances and payment history, sales/product analytics, the combined dashboard, and alert processing/listing. Analytics requests are bounded to 366 days and default to the most recent 90 days. `POST /v1/alerts/run` should be invoked on a schedule; `GET /v1/alerts/due` supplies notifications eligible to send. Delivery (WhatsApp/SMS/email) and user roles are not included yet.
+
+## Test frontend
+
+The first React + TypeScript frontend lives in `frontend/`. It provides a dashboard plus inventory, sales, analytics, customer debt, and alert views. Inventory includes stock counts, low-stock status, unit prices, and total cost, potential sales, and potential gross profit valuations. These are estimates based on current product prices and on-hand stock, not accounting valuations. The Analytics page includes a date-range report for revenue, profit, product performance, and average weekday sales. It is an early testing interface, not a production authentication setup: the shop API key is held in browser memory only, and the signup token is only used during test-shop creation.
+
+Run the API with a disposable local database and a test signup token:
+
+```bash
+DATABASE_URL=sqlite:///./frontend-test.db RETAIL_SIGNUP_TOKEN=local-test-secret \
+  python -m uvicorn retail_ops.api:app --reload --port 8000
+```
+
+In another terminal, install and start the frontend:
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Open the Vite URL (usually `http://localhost:5173`). Create a disposable test shop using the API docs at `http://localhost:8000/docs` and `X-Signup-Token: local-test-secret`, then paste its returned API key into the UI. The development server proxies API requests to `http://127.0.0.1:8000`; override this with `API_PROXY_TARGET` if needed. Do not use a production API key in this browser prototype.
 
 Schema changes are versioned in `migrations/`. For a database that already contains the engine's existing tables, run the legacy `init_db()` schema upgrade once, then `alembic stamp e89314efd691` followed by `alembic upgrade head`; review the baseline against your actual schema before stamping. New databases should use `alembic upgrade head`. Production should set `RETAIL_AUTO_CREATE_SCHEMA=false` after applying migrations so application workers do not mutate schema at startup.

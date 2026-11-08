@@ -6,7 +6,7 @@ import os
 import secrets
 from threading import Lock
 from datetime import date, datetime, timedelta
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Annotated, Generator, Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
@@ -319,11 +319,51 @@ def create_app(
 
     @app.get("/v1/inventory", tags=["inventory"])
     def inventory(shop: ShopAuth, session: DBSession):
-        return {"items": [
-            {"product_id": line.product_id, "name": line.name, "stock": line.stock,
-             "reorder_level": line.reorder_level, "below_reorder_level": line.below_reorder_level}
-            for line in stock_levels(session, shop.id)
-        ]}
+        levels = stock_levels(session, shop.id)
+        products = session.scalars(
+            select(Product).where(
+                Product.shop_id == shop.id,
+                Product.id.in_([line.product_id for line in levels]),
+            )
+        ).all() if levels else []
+        product_by_id = {product.id: product for product in products}
+        items = []
+        stock_cost_value = potential_sales_value = Decimal("0.00")
+        for line in levels:
+            product = product_by_id[line.product_id]
+            quantity = Decimal(str(line.stock))
+            cost_value = (Decimal(product.unit_cost_kobo) * quantity / 100).quantize(
+                Decimal("0.01"), rounding=ROUND_HALF_UP
+            )
+            sales_value = (Decimal(product.selling_price_kobo) * quantity / 100).quantize(
+                Decimal("0.01"), rounding=ROUND_HALF_UP
+            )
+            stock_cost_value += cost_value
+            potential_sales_value += sales_value
+            items.append({
+                "product_id": line.product_id,
+                "name": line.name,
+                "unit_name": product.unit_name,
+                "stock": line.stock,
+                "reorder_level": line.reorder_level,
+                "below_reorder_level": line.below_reorder_level,
+                "unit_cost": product.unit_cost,
+                "selling_price": product.selling_price,
+                "stock_cost_value": float(cost_value),
+                "potential_sales_value": float(sales_value),
+                "potential_gross_profit": float(sales_value - cost_value),
+            })
+        return {
+            "items": items,
+            "summary": {
+                "product_count": len(items),
+                "products_in_stock": sum(1 for line in levels if line.stock > 0),
+                "low_stock_count": sum(1 for line in levels if line.below_reorder_level),
+                "stock_cost_value": float(stock_cost_value),
+                "potential_sales_value": float(potential_sales_value),
+                "potential_gross_profit": float(potential_sales_value - stock_cost_value),
+            },
+        }
 
     @app.post("/v1/customers", status_code=201, tags=["customers"])
     def create_customer(payload: CustomerCreate, shop: ShopAuth, session: DBSession):

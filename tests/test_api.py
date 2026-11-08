@@ -159,8 +159,15 @@ class RetailAPITests(unittest.TestCase):
             json={"quantity": "-0.5", "reason": "damaged"},
         )
         self.assertEqual(adjustment.status_code, 201, adjustment.text)
-        inventory = self.client.get("/v1/inventory", headers=auth).json()["items"][0]
+        inventory_data = self.client.get("/v1/inventory", headers=auth).json()
+        inventory = inventory_data["items"][0]
         self.assertEqual(inventory["stock"], 1.5)
+        self.assertEqual(inventory_data["summary"]["product_count"], 1)
+        self.assertEqual(inventory_data["summary"]["products_in_stock"], 1)
+        self.assertEqual(inventory_data["summary"]["stock_cost_value"], 3)
+        self.assertEqual(inventory_data["summary"]["potential_sales_value"], 7.5)
+        self.assertEqual(inventory_data["summary"]["potential_gross_profit"], 4.5)
+        self.assertEqual(inventory["potential_gross_profit"], 4.5)
 
         sales_analytics = self.client.get("/v1/analytics/sales", headers=auth).json()
         self.assertEqual(sales_analytics["summary"]["revenue"], 5)
