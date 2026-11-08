@@ -11,7 +11,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from decimal import Decimal, ROUND_HALF_UP
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Index, Integer, String, UniqueConstraint
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, validates
 
 
@@ -168,3 +168,35 @@ class StockAdjustment(Base):
         if value not in ADJUSTMENT_REASONS:
             raise ValueError(f"reason must be one of {ADJUSTMENT_REASONS}")
         return value
+
+
+class Alert(Base):
+    """STEP 4. A warning the engine raised for a shop (e.g. 'Amoxicillin is running low').
+
+    One row = one EPISODE of a problem. While the problem lasts the row stays 'open' and is never duplicated.
+    When the problem goes away the row becomes 'resolved'. If it comes back later, a NEW row is opened.
+      kind         what sort of problem        ('out_of_stock', 'running_low', 'sales_drop', ...)
+      subject_key  what it is about            (a product id, a stock batch id, or 'shop')
+      urgency      'now' (tell the owner at once) or 'weekly' (goes in the Monday summary)
+      notified_at  when we last TOLD the owner. Empty = not told yet, so a failed WhatsApp send is never lost.
+    """
+    __tablename__ = "alerts"
+    __table_args__ = (
+        Index("ix_alerts_shop_status", "shop_id", "status"),
+        # the database itself refuses two OPEN alerts for the same problem
+        Index("uq_open_alert", "shop_id", "kind", "subject_key", unique=True,
+              sqlite_where=text("status = 'open'"), postgresql_where=text("status = 'open'")),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    shop_id: Mapped[int] = mapped_column(ForeignKey("shops.id"))
+    kind: Mapped[str] = mapped_column(String(30))
+    subject_key: Mapped[str] = mapped_column(String(40))
+    urgency: Mapped[str] = mapped_column(String(10))
+    message: Mapped[str] = mapped_column(Text)
+    action: Mapped[str] = mapped_column(String(200), default="")
+    status: Mapped[str] = mapped_column(String(10), default="open")
+    created_at: Mapped[datetime] = mapped_column(DateTime)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime)
+    notified_at: Mapped[datetime | None] = mapped_column(DateTime)
