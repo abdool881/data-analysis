@@ -66,3 +66,21 @@ with Session() as session:
 `currency_code` is the currency in which that shop records its prices. Set it when creating the shop; changing the code alone does not convert historical prices. The engine formats alert amounts in that currency; it does not convert or compare amounts across currencies. Monetary storage currently preserves two decimal places. Each product's quantity unit should remain consistent across its sales, restocks, and stock adjustments.
 
 Existing SQLite and PostgreSQL databases are upgraded when `init_db()` runs. Existing shops retain the `NGN` default, and existing products retain the default `unit` unit.
+
+## HTTP API
+
+The engine is exposed through a versioned FastAPI service. Request and response models are documented by OpenAPI at `/docs`.
+
+```bash
+export DATABASE_URL='postgresql+psycopg://user:password@localhost:5432/retail'
+export RETAIL_SIGNUP_TOKEN='set-a-long-random-onboarding-secret'
+alembic upgrade head
+export RETAIL_AUTO_CREATE_SCHEMA=false
+uvicorn api:app --host 0.0.0.0 --port 8000
+```
+
+`POST /v1/shops` requires the `X-Signup-Token` onboarding secret. It returns a randomly generated shop API key once; send it as `Authorization: Bearer <key>` for shop routes. Keys are stored as hashes and can be rotated at `POST /v1/shop/api-key/rotate`. Every data endpoint scopes its records to the authenticated shop. Set `DATABASE_URL` to PostgreSQL for deployment; SQLite remains useful for local development. Connection pool limits are configurable with `DB_POOL_SIZE`, `DB_MAX_OVERFLOW`, `DB_POOL_TIMEOUT`, and `DB_POOL_RECYCLE`.
+
+Available endpoint groups include inventory/products, customers, sales/returns, debt balances and payment history, sales/product analytics, the combined dashboard, and alert processing/listing. Analytics requests are bounded to 366 days and default to the most recent 90 days. `POST /v1/alerts/run` should be invoked on a schedule; `GET /v1/alerts/due` supplies notifications eligible to send. Delivery (WhatsApp/SMS/email), a browser UI, and user roles are not included yet.
+
+Schema changes are versioned in `migrations/`. For a database that already contains the engine's existing tables, run the legacy `init_db()` schema upgrade once, then `alembic stamp e89314efd691` followed by `alembic upgrade head`; review the baseline against your actual schema before stamping. New databases should use `alembic upgrade head`. Production should set `RETAIL_AUTO_CREATE_SCHEMA=false` after applying migrations so application workers do not mutate schema at startup.

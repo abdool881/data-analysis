@@ -11,7 +11,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from decimal import Decimal, ROUND_HALF_UP
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Index, Integer, Numeric, String, Text, UniqueConstraint, text
+from sqlalchemy import BigInteger, Boolean, Date, DateTime, ForeignKey, Index, Integer, Numeric, String, Text, UniqueConstraint, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, validates
 
 
@@ -45,6 +45,7 @@ class Shop(Base):
     owner_email: Mapped[str | None] = mapped_column(String(120))
     entry_mode: Mapped[str] = mapped_column(String(20), default="individual")   # or "daily_totals"
     currency_code: Mapped[str] = mapped_column(String(3), default="NGN")
+    api_key_hash: Mapped[str | None] = mapped_column(String(64), unique=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
 
     products: Mapped[list["Product"]] = relationship(back_populates="shop", cascade="all, delete-orphan")
@@ -68,9 +69,9 @@ class Product(Base):
     name: Mapped[str] = mapped_column(String(120))
     name_key: Mapped[str] = mapped_column(String(120))                  # filled in automatically
     unit_name: Mapped[str] = mapped_column(String(30), default="unit")
-    unit_cost_kobo: Mapped[int] = mapped_column(Integer)                # current buy price
+    unit_cost_kobo: Mapped[int] = mapped_column(BigInteger)             # current buy price in currency hundredths
     unit_cost_as_of: Mapped[date] = mapped_column(Date, default=date.today)
-    selling_price_kobo: Mapped[int] = mapped_column(Integer)            # default sell price
+    selling_price_kobo: Mapped[int] = mapped_column(BigInteger)         # default sell price in currency hundredths
     reorder_level: Mapped[Decimal] = mapped_column(Numeric(12, 3), default=0)
     lead_time_days: Mapped[int] = mapped_column(Integer, default=7)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -114,8 +115,8 @@ class Sale(Base):
     return_of_sale_id: Mapped[int | None] = mapped_column(ForeignKey("sales.id"), index=True)
     sold_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)   # date AND time
     quantity: Mapped[Decimal] = mapped_column(Numeric(12, 3))                    # negative = return of return_of_sale_id
-    unit_price_kobo: Mapped[int] = mapped_column(Integer)                        # price actually charged
-    unit_cost_kobo: Mapped[int] = mapped_column(Integer)                         # cost at the time of sale
+    unit_price_kobo: Mapped[int] = mapped_column(BigInteger)                     # price actually charged
+    unit_cost_kobo: Mapped[int] = mapped_column(BigInteger)                      # cost at the time of sale
 
     unit_price = naira_view("unit_price_kobo")
     unit_cost = naira_view("unit_cost_kobo")
@@ -142,7 +143,7 @@ class CustomerDebt(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     sale_id: Mapped[int] = mapped_column(ForeignKey("sales.id"), unique=True, index=True)
-    principal_kobo: Mapped[int] = mapped_column(Integer)
+    principal_kobo: Mapped[int] = mapped_column(BigInteger)
     due_date: Mapped[date] = mapped_column(Date, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
 
@@ -155,7 +156,7 @@ class DebtEntry(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     debt_id: Mapped[int] = mapped_column(ForeignKey("customer_debts.id"), index=True)
-    amount_kobo: Mapped[int] = mapped_column(Integer)
+    amount_kobo: Mapped[int] = mapped_column(BigInteger)
     kind: Mapped[str] = mapped_column(String(20), default="payment")
     recorded_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
     note: Mapped[str | None] = mapped_column(String(200))
@@ -178,7 +179,7 @@ class Restock(Base):
     product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), index=True)
     received_on: Mapped[date] = mapped_column(Date)
     quantity: Mapped[Decimal] = mapped_column(Numeric(12, 3))
-    unit_cost_kobo: Mapped[int] = mapped_column(Integer)
+    unit_cost_kobo: Mapped[int] = mapped_column(BigInteger)
     kind: Mapped[str] = mapped_column(String(20), default="purchase")        # "opening" or "purchase"
     expiry_date: Mapped[date | None] = mapped_column(Date)
     supplier: Mapped[str | None] = mapped_column(String(120))

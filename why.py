@@ -87,7 +87,8 @@ def compare_periods(df: pd.DataFrame, end, days: int = 7, stock: pd.DataFrame | 
     result["change_pct"] = (result["change"] / result["before"]["revenue"] * 100) if result["before"]["revenue"] else np.nan
 
     agg = lambda d: d.groupby("product").agg(units=("quantity", "sum"), revenue=("revenue", "sum"))
-    t = agg(prev).join(agg(cur), how="outer", lsuffix="_prev", rsuffix="_cur").fillna(0.0)
+    t = agg(prev).merge(agg(cur), how="outer", left_index=True, right_index=True,
+                        suffixes=("_prev", "_cur")).fillna(0.0)
     price_prev = (t["revenue_prev"] / t["units_prev"]).where(t["units_prev"] > 0)
     price_cur = (t["revenue_cur"] / t["units_cur"]).where(t["units_cur"] > 0)
     ref = price_prev.fillna(price_cur).fillna(0.0)

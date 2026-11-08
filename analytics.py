@@ -12,7 +12,8 @@ We count a return on the day it was returned (not the day of the original sale).
 from __future__ import annotations
 
 import pandas as pd
-from datetime import date, timedelta
+import numpy as np
+from datetime import date, datetime, time, timedelta
 from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
@@ -22,12 +23,21 @@ COLUMNS = ["sale_id", "product_id", "product", "customer_id", "sold_at", "date",
            "unit_price", "unit_cost", "revenue", "cost", "profit", "is_return"]
 
 
-def sales_frame(session: Session, shop_id: int) -> pd.DataFrame:
+def sales_frame(session: Session, shop_id: int, start: date | None = None,
+                end: date | None = None) -> pd.DataFrame:
     """Every sale and return of one shop, as a table with revenue / cost / profit already worked out."""
-    rows = session.execute(
+    statement = (
         select(Sale.id, Sale.product_id, Product.name, Sale.customer_id, Sale.sold_at, Sale.quantity,
                Sale.unit_price_kobo, Sale.unit_cost_kobo)
-        .join(Product, Product.id == Sale.product_id).where(Sale.shop_id == shop_id)).all()
+        .join(Product, Product.id == Sale.product_id).where(Sale.shop_id == shop_id)
+    )
+    if start is not None:
+        statement = statement.where(Sale.sold_at >= datetime.combine(start, time.min))
+    if end is not None:
+        statement = statement.where(Sale.sold_at < datetime.combine(end + timedelta(days=1), time.min))
+    rows = session.execute(
+        statement.order_by(Sale.sold_at)
+    ).all()
     if not rows:
         return pd.DataFrame(columns=COLUMNS)
     df = pd.DataFrame(rows, columns=["sale_id", "product_id", "product", "customer_id", "sold_at",
@@ -80,7 +90,8 @@ def by_period(df: pd.DataFrame, freq: str = "D", start=None, end=None) -> pd.Dat
         out = out.reindex(pd.date_range(start or out.index.min(), end or out.index.max()), fill_value=0)
     if freq == "W":                       # pandas labels a week by its LAST day; show the FIRST day (Monday) instead
         out.index = out.index - pd.Timedelta(days=6)
-    out["change_pct"] = out["revenue"].pct_change() * 100
+    change_pct = out["revenue"].pct_change(fill_method=None) * 100
+    out["change_pct"] = change_pct.astype(object).where(np.isfinite(change_pct), None)
     return out.rename_axis("period").reset_index()
 
 
@@ -125,7 +136,10 @@ def debt_dashboard(session: Session, shop_id: int, as_of: date | None = None,
                 DebtEntry.debt_id,
                 func.sum(case((DebtEntry.kind == "payment", DebtEntry.amount_kobo), else_=0)),
                 func.sum(case((DebtEntry.kind == "return_credit", DebtEntry.amount_kobo), else_=0)),
-            ).group_by(DebtEntry.debt_id)
+            ).join(CustomerDebt, CustomerDebt.id == DebtEntry.debt_id)
+            .join(Sale, Sale.id == CustomerDebt.sale_id)
+            .where(Sale.shop_id == shop_id)
+            .group_by(DebtEntry.debt_id)
         ).all()
     }
 
