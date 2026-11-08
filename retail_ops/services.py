@@ -20,7 +20,7 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from models import Customer, CustomerDebt, DebtEntry, Product, Restock, Sale, StockAdjustment, to_kobo
+from .models import Customer, CustomerDebt, DebtEntry, Product, Restock, Sale, StockAdjustment, to_kobo
 
 
 class ShopError(ValueError):

@@ -1,1 +1,11 @@
-Generic single-database configuration.
+# Database migrations
+
+Run Alembic commands from the repository root. Set `DATABASE_URL` to the target database before upgrading:
+
+```bash
+alembic upgrade head
+alembic current
+```
+
+For new deployments, apply migrations before starting the API and set `RETAIL_AUTO_CREATE_SCHEMA=false`.
+See the root README for the legacy-database baseline procedure.

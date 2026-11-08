@@ -8,7 +8,7 @@ import os
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import Session, sessionmaker
 
-from models import Base
+from .models import Base
 
 
 def _upgrade_schema(engine) -> None:

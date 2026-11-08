@@ -16,8 +16,8 @@ import pandas as pd
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from analytics import between
-from models import Product, Restock, Sale, StockAdjustment
+from .analytics import between
+from .models import Product, Restock, Sale, StockAdjustment
 
 
 def stock_history(session: Session, shop_id: int, end) -> pd.DataFrame:

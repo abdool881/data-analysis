@@ -7,8 +7,8 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from api import create_app
-from database import init_db
+from retail_ops.api import create_app
+from retail_ops.database import init_db
 
 
 class RetailAPITests(unittest.TestCase):

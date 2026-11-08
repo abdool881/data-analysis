@@ -3,11 +3,11 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal
 import os, sqlite3, tempfile
 
-from alerts import AlertConfig, run_alerts
-from analytics import debt_dashboard, sales_frame, summary
-from database import init_db
-from models import Product, Sale, Shop, to_kobo
-from services import (ShopError, add_product, current_stock, get_or_create_customer, record_adjustment,
+from retail_ops.alerts import AlertConfig, run_alerts
+from retail_ops.analytics import debt_dashboard, sales_frame, summary
+from retail_ops.database import init_db
+from retail_ops.models import Product, Sale, Shop, to_kobo
+from retail_ops.services import (ShopError, add_product, current_stock, get_or_create_customer, record_adjustment,
                       record_credit_sale, record_debt_payment, record_restock, record_return, record_sale)
 
 def refused(fn):

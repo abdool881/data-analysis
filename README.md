@@ -2,6 +2,25 @@
 
 This project provides the data and alerting layer for retail shops. It is not tied to pharmacy products: a shop can track any catalog item with a name, cost, selling price, stock quantity, and a unit such as `piece`, `kg`, `litre`, or `metre`.
 
+## Project layout
+
+```text
+retail_ops/          Engine, API, database models, and business logic
+migrations/          Alembic migration environment and schema revisions
+tests/               Automated API integration tests
+scripts/             Demo and engine regression checks
+```
+
+Install the project and its dependencies from the repository root with `python -m pip install -r requirements.txt`.
+
+Run the automated tests and example checks with:
+
+```bash
+python -m unittest discover -s tests -v
+python -m scripts.check_fixes
+python -m scripts.demo
+```
+
 ## What it supports
 
 - Products, sales, returns, restocks, and stock corrections
@@ -22,9 +41,9 @@ Create/find a customer with a name and phone number, then record a credit sale a
 ```python
 from datetime import date, timedelta
 
-from analytics import debt_dashboard
-from alerts import run_alerts
-from services import get_or_create_customer, record_credit_sale, record_debt_payment
+from retail_ops.analytics import debt_dashboard
+from retail_ops.alerts import run_alerts
+from retail_ops.services import get_or_create_customer, record_credit_sale, record_debt_payment
 
 customer = get_or_create_customer(session, shop.id, "08035551234", "Jordan Lee")
 credit = record_credit_sale(
@@ -41,10 +60,10 @@ The dashboard returns outstanding, overdue, due-today, due-soon, and customer-cr
 ## Examples
 
 ```python
-from alerts import AlertConfig, run_alerts
-from database import init_db
-from models import Shop
-from services import add_product
+from retail_ops.alerts import AlertConfig, run_alerts
+from retail_ops.database import init_db
+from retail_ops.models import Shop
+from retail_ops.services import add_product
 
 Session = init_db()
 with Session() as session:
@@ -76,7 +95,7 @@ export DATABASE_URL='postgresql+psycopg://user:password@localhost:5432/retail'
 export RETAIL_SIGNUP_TOKEN='set-a-long-random-onboarding-secret'
 alembic upgrade head
 export RETAIL_AUTO_CREATE_SCHEMA=false
-uvicorn api:app --host 0.0.0.0 --port 8000
+uvicorn retail_ops.api:app --host 0.0.0.0 --port 8000
 ```
 
 `POST /v1/shops` requires the `X-Signup-Token` onboarding secret. It returns a randomly generated shop API key once; send it as `Authorization: Bearer <key>` for shop routes. Keys are stored as hashes and can be rotated at `POST /v1/shop/api-key/rotate`. Every data endpoint scopes its records to the authenticated shop. Set `DATABASE_URL` to PostgreSQL for deployment; SQLite remains useful for local development. Connection pool limits are configurable with `DB_POOL_SIZE`, `DB_MAX_OVERFLOW`, `DB_POOL_TIMEOUT`, and `DB_POOL_RECYCLE`.

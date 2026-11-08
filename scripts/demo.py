@@ -1,13 +1,10 @@
-"""Run:  python demo_step4.py
-A pretend pharmacy with EIGHT planted problems. The engine must find them, stay quiet about healthy products,
-not repeat itself, and close an alert once the problem is fixed.
-"""
+"""Run with ``python -m scripts.demo`` to exercise sample alerts."""
 from datetime import date, datetime, timedelta
 
-from alerts import due_now, mark_notified, run_alerts, weekly_digest
-from database import init_db
-from models import Shop
-from services import add_product, get_or_create_customer, get_product, record_restock, record_return, record_sale
+from retail_ops.alerts import due_now, mark_notified, run_alerts, weekly_digest
+from retail_ops.database import init_db
+from retail_ops.models import Shop
+from retail_ops.services import add_product, get_or_create_customer, get_product, record_restock, record_return, record_sale
 
 Session = init_db("sqlite:///:memory:")
 AS_OF = date(2026, 11, 7)                          # the day we are checking

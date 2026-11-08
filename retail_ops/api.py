@@ -16,11 +16,11 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
-from alerts import AlertConfig, due_now, run_alerts, weekly_digest
-from analytics import by_period, debt_dashboard, product_ranking, sales_frame, summary, weekday_pattern
-from database import init_db
-from models import Alert, Customer, CustomerDebt, DebtEntry, Product, Sale, Shop
-from services import (
+from .alerts import AlertConfig, due_now, run_alerts, weekly_digest
+from .analytics import by_period, debt_dashboard, product_ranking, sales_frame, summary, weekday_pattern
+from .database import init_db
+from .models import Alert, Customer, CustomerDebt, DebtEntry, Product, Sale, Shop
+from .services import (
     ShopError,
     add_product,
     current_stock,

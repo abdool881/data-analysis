@@ -17,7 +17,7 @@ from datetime import date, datetime, time, timedelta
 from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
-from models import Customer, CustomerDebt, DebtEntry, Product, Sale, Shop
+from .models import Customer, CustomerDebt, DebtEntry, Product, Sale, Shop
 
 COLUMNS = ["sale_id", "product_id", "product", "customer_id", "sold_at", "date", "quantity",
            "unit_price", "unit_cost", "revenue", "cost", "profit", "is_return"]

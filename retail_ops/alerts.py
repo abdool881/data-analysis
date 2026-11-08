@@ -20,10 +20,10 @@ import pandas as pd
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from analytics import between, debt_dashboard, sales_frame
-from models import Alert, Customer, Product, Restock, Shop
-from services import stock_levels
-from why import compare_periods, stock_history
+from .analytics import between, debt_dashboard, sales_frame
+from .models import Alert, Customer, Product, Restock, Shop
+from .services import stock_levels
+from .why import compare_periods, stock_history
 
 
 @dataclass
