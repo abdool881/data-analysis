@@ -12,10 +12,11 @@ We count a return on the day it was returned (not the day of the original sale).
 from __future__ import annotations
 
 import pandas as pd
-from sqlalchemy import select
+from datetime import date, timedelta
+from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
-from models import Product, Sale
+from models import Customer, CustomerDebt, DebtEntry, Product, Sale, Shop
 
 COLUMNS = ["sale_id", "product_id", "product", "customer_id", "sold_at", "date", "quantity",
            "unit_price", "unit_cost", "revenue", "cost", "profit", "is_return"]
@@ -32,6 +33,7 @@ def sales_frame(session: Session, shop_id: int) -> pd.DataFrame:
     df = pd.DataFrame(rows, columns=["sale_id", "product_id", "product", "customer_id", "sold_at",
                                      "quantity", "price_kobo", "cost_kobo"])
     df["sold_at"] = pd.to_datetime(df["sold_at"])
+    df["quantity"] = df["quantity"].astype(float)
     df["date"] = df["sold_at"].dt.normalize()
     df["unit_price"] = df["price_kobo"] / 100
     df["unit_cost"] = df["cost_kobo"] / 100
@@ -51,11 +53,12 @@ def summary(df: pd.DataFrame) -> dict:
     """The headline numbers."""
     revenue, profit = float(df["revenue"].sum()), float(df["profit"].sum())
     sales_only = df[~df["is_return"]]
+    units = float(df["quantity"].sum())
     return {
         "revenue": revenue,
         "profit": profit,
         "margin_pct": profit / revenue * 100 if revenue else None,
-        "units": int(df["quantity"].sum()),
+        "units": int(units) if units.is_integer() else units,
         "transactions": int(len(sales_only)),
         "avg_sale": float(sales_only["revenue"].mean()) if len(sales_only) else 0.0,
         "returns_value": float(-df.loc[df["is_return"], "revenue"].sum()),
@@ -101,3 +104,106 @@ def weekday_pattern(df: pd.DataFrame) -> pd.DataFrame:
     out = daily.groupby(daily.index.day_name()).mean()
     order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
     return out.reindex([d for d in order if d in out.index]).rename("avg_revenue").rename_axis("weekday").reset_index()
+
+
+def debt_dashboard(session: Session, shop_id: int, as_of: date | None = None,
+                   due_soon_days: int = 7) -> dict:
+    """Return receivables, customer/item details, and due-date analytics for a shop."""
+    as_of = as_of or date.today()
+    due_soon_through = as_of + timedelta(days=due_soon_days)
+    rows = session.execute(
+        select(CustomerDebt, Sale, Customer, Product)
+        .join(Sale, Sale.id == CustomerDebt.sale_id)
+        .join(Customer, Customer.id == Sale.customer_id)
+        .join(Product, Product.id == Sale.product_id)
+        .where(Sale.shop_id == shop_id)
+    ).all()
+    entries = {
+        debt_id: (int(paid or 0), int(returns or 0))
+        for debt_id, paid, returns in session.execute(
+            select(
+                DebtEntry.debt_id,
+                func.sum(case((DebtEntry.kind == "payment", DebtEntry.amount_kobo), else_=0)),
+                func.sum(case((DebtEntry.kind == "return_credit", DebtEntry.amount_kobo), else_=0)),
+            ).group_by(DebtEntry.debt_id)
+        ).all()
+    }
+
+    debts = []
+    customer_totals: dict[int, dict] = {}
+    total_outstanding = overdue_amount = due_today_amount = due_soon_amount = customer_credit_total = 0
+    overdue_count = due_today_count = due_soon_count = open_count = 0
+    owing_customers: set[int] = set()
+
+    for debt, sale, customer, product in rows:
+        paid_kobo, return_kobo = entries.get(debt.id, (0, 0))
+        balance_kobo = debt.principal_kobo - paid_kobo - return_kobo
+        amount_due_kobo, credit_kobo = max(balance_kobo, 0), max(-balance_kobo, 0)
+        if amount_due_kobo:
+            open_count += 1
+            total_outstanding += amount_due_kobo
+            owing_customers.add(customer.id)
+            summary = customer_totals.setdefault(customer.id, {
+                "customer_id": customer.id, "name": customer.name, "phone": customer.phone, "amount_due": 0.0,
+            })
+            summary["amount_due"] += amount_due_kobo / 100
+        if credit_kobo:
+            customer_credit_total += credit_kobo
+
+        if balance_kobo <= 0:
+            status = "customer_credit" if credit_kobo else "paid"
+        elif debt.due_date < as_of:
+            status = "overdue"
+            overdue_count += 1
+            overdue_amount += amount_due_kobo
+        elif debt.due_date == as_of:
+            status = "due_today"
+            due_today_count += 1
+            due_today_amount += amount_due_kobo
+        elif debt.due_date <= due_soon_through:
+            status = "due_soon"
+            due_soon_count += 1
+            due_soon_amount += amount_due_kobo
+        else:
+            status = "open"
+
+        debts.append({
+            "debt_id": debt.id,
+            "sale_id": sale.id,
+            "customer_id": customer.id,
+            "customer_name": customer.name,
+            "customer_phone": customer.phone,
+            "product": product.name,
+            "quantity": float(sale.quantity),
+            "unit": product.unit_name,
+            "unit_price": sale.unit_price_kobo / 100,
+            "sold_at": sale.sold_at,
+            "due_date": debt.due_date,
+            "original_amount": debt.principal_kobo / 100,
+            "paid_amount": paid_kobo / 100,
+            "returned_amount": return_kobo / 100,
+            "amount_due": amount_due_kobo / 100,
+            "customer_credit": credit_kobo / 100,
+            "status": status,
+        })
+
+    debts.sort(key=lambda item: (item["due_date"], item["debt_id"]))
+    top_customers = sorted(customer_totals.values(), key=lambda item: item["amount_due"], reverse=True)[:10]
+    shop = session.get(Shop, shop_id)
+    return {
+        "shop_id": shop_id,
+        "currency_code": shop.currency_code if shop else "NGN",
+        "as_of": as_of,
+        "total_outstanding": total_outstanding / 100,
+        "overdue_amount": overdue_amount / 100,
+        "due_today_amount": due_today_amount / 100,
+        "due_soon_amount": due_soon_amount / 100,
+        "customer_credit_total": customer_credit_total / 100,
+        "open_debt_count": open_count,
+        "overdue_count": overdue_count,
+        "due_today_count": due_today_count,
+        "due_soon_count": due_soon_count,
+        "customers_owing_count": len(owing_customers),
+        "top_customers": top_customers,
+        "debts": debts,
+    }

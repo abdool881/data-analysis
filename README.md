@@ -1,1 +1,68 @@
-# data-analysis
+# Retail operations engine
+
+This project provides the data and alerting layer for retail shops. It is not tied to pharmacy products: a shop can track any catalog item with a name, cost, selling price, stock quantity, and a unit such as `piece`, `kg`, `litre`, or `metre`.
+
+## What it supports
+
+- Products, sales, returns, restocks, and stock corrections
+- Customer credit sales, partial payments, and returned-item credits
+- A debt dashboard with customer contact details, items purchased, outstanding balances, and due-date summaries
+- Fractional stock quantities up to three decimal places
+- Product-specific units, so stock is counted consistently for each item
+- Per-shop currency codes, with no exchange-rate conversion between shops
+- Sales, profit, stock, reorder, slow-moving/overstock, loss, customer-retention, and optional expiry alerts
+- Alert deduplication, notification reminders, and automatic resolution
+
+Expiry dates are optional on restocks. Retailers that do not use expiry tracking can leave them blank or disable that alert rule. Customer-retention, sales-drop, and overstock rules can also be disabled when they do not fit a shop's business model.
+
+## Customer debts
+
+Create/find a customer with a name and phone number, then record a credit sale against that customer and give it a due date. Each credit sale is tied to its sale line, so the debt record retains the product, quantity, unit price, and sale date. Record partial or final payments against that debt. Returning items from a credit sale automatically applies a return credit to its balance.
+
+```python
+from datetime import date, timedelta
+
+from analytics import debt_dashboard
+from alerts import run_alerts
+from services import get_or_create_customer, record_credit_sale, record_debt_payment
+
+customer = get_or_create_customer(session, shop.id, "08035551234", "Jordan Lee")
+credit = record_credit_sale(
+    session, product, customer, quantity=2, due_date=date.today() + timedelta(days=14),
+)
+record_debt_payment(session, credit.debt, amount=100)
+
+dashboard = debt_dashboard(session, shop.id)
+alerts = run_alerts(session, shop.id, as_of=date.today())
+```
+
+The dashboard returns outstanding, overdue, due-today, due-soon, and customer-credit totals plus a debt list with the customer's name/phone, purchased item, amount paid, balance, and due date. The alert engine opens an urgent alert on the due date (by default, also one day before), repeats it using the existing reminder schedule, and resolves it after the debt is settled. This tracks money customers owe the shop; supplier/payables debt is not included.
+
+## Examples
+
+```python
+from alerts import AlertConfig, run_alerts
+from database import init_db
+from models import Shop
+from services import add_product
+
+Session = init_db()
+with Session() as session:
+    shop = Shop(name="Market", currency_code="USD")
+    session.add(shop)
+    session.flush()
+
+    add_product(
+        session, shop.id, "Apples", unit_cost=1.25, selling_price=2.49,
+        opening_stock=12.5, reorder_level=3, unit_name="kg",
+    )
+
+    # For a shop where expiry and customer-retention alerts are not relevant:
+    config = AlertConfig(expiry_warning_days=None, overdue_min_visits=None)
+    run_alerts(session, shop.id, as_of="2026-11-07", cfg=config)
+    session.commit()
+```
+
+`currency_code` is the currency in which that shop records its prices. Set it when creating the shop; changing the code alone does not convert historical prices. The engine formats alert amounts in that currency; it does not convert or compare amounts across currencies. Monetary storage currently preserves two decimal places. Each product's quantity unit should remain consistent across its sales, restocks, and stock adjustments.
+
+Existing SQLite and PostgreSQL databases are upgraded when `init_db()` runs. Existing shops retain the `NGN` default, and existing products retain the default `unit` unit.

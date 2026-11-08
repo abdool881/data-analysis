@@ -12,9 +12,19 @@ from models import Base
 def _upgrade_schema(engine) -> None:
     with engine.begin() as connection:
         inspector = inspect(connection)
+        shop_columns = {column["name"] for column in inspector.get_columns("shops")}
+        if "currency_code" not in shop_columns:
+            connection.execute(text(
+                "ALTER TABLE shops ADD COLUMN currency_code VARCHAR(3) NOT NULL DEFAULT 'NGN'"
+            ))
+
         product_columns = {column["name"] for column in inspector.get_columns("products")}
         if "unit_cost_as_of" not in product_columns:
             connection.execute(text("ALTER TABLE products ADD COLUMN unit_cost_as_of DATE"))
+        if "unit_name" not in product_columns:
+            connection.execute(text(
+                "ALTER TABLE products ADD COLUMN unit_name VARCHAR(30) NOT NULL DEFAULT 'unit'"
+            ))
         connection.execute(text(
             "UPDATE products SET unit_cost_as_of = CURRENT_DATE WHERE unit_cost_as_of IS NULL"
         ))
@@ -27,6 +37,18 @@ def _upgrade_schema(engine) -> None:
         connection.execute(text(
             "CREATE INDEX IF NOT EXISTS ix_sales_return_of_sale_id ON sales (return_of_sale_id)"
         ))
+
+        if connection.dialect.name == "postgresql":
+            for table, columns in (
+                ("products", ("reorder_level",)),
+                ("sales", ("quantity",)),
+                ("restocks", ("quantity",)),
+                ("stock_adjustments", ("quantity",)),
+            ):
+                for column in columns:
+                    connection.execute(text(
+                        f"ALTER TABLE {table} ALTER COLUMN {column} TYPE NUMERIC(12, 3) USING {column}::numeric"
+                    ))
 
 
 def init_db(url: str = "sqlite:///bizengine.db") -> sessionmaker[Session]:

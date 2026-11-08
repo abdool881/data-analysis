@@ -15,20 +15,34 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from models import Customer, Product, Restock, Sale, StockAdjustment
+from models import Customer, CustomerDebt, DebtEntry, Product, Restock, Sale, StockAdjustment, to_kobo
 
 
 class ShopError(ValueError):
     """A mistake the owner can understand and fix. Safe to show on the screen."""
 
 
-def _require_whole_quantity(quantity: int) -> None:
-    if isinstance(quantity, bool) or not isinstance(quantity, int):
-        raise ShopError("Quantity must be a whole number.")
+def _quantity_value(quantity: int | float | Decimal) -> Decimal:
+    if isinstance(quantity, bool) or not isinstance(quantity, (int, float, Decimal)):
+        raise ShopError("Quantity must be a number.")
+    try:
+        value = Decimal(str(quantity))
+    except InvalidOperation as exc:
+        raise ShopError("Quantity must be a finite number.") from exc
+    if not value.is_finite():
+        raise ShopError("Quantity must be a finite number.")
+    if value.normalize().as_tuple().exponent < -3:
+        raise ShopError("Quantity supports at most three decimal places.")
+    return value
+
+
+def _stock_value(quantity: Decimal) -> int | Decimal:
+    return int(quantity) if quantity == quantity.to_integral_value() else quantity
 
 
 # ---------------------------------------------------------------- finding things
@@ -55,20 +69,22 @@ def get_or_create_customer(session: Session, shop_id: int, phone: str, name: str
 
 
 # ---------------------------------------------------------------- counting stock
-def current_stock(session: Session, product_id: int) -> int:
+def current_stock(session: Session, product_id: int) -> int | Decimal:
     """left = everything that came IN - everything that went OUT +/- corrections."""
     def total(column, table):
         return session.scalar(select(func.coalesce(func.sum(column), 0)).where(table.product_id == product_id))
 
-    return total(Restock.quantity, Restock) - total(Sale.quantity, Sale) + total(StockAdjustment.quantity, StockAdjustment)
+    quantity = (total(Restock.quantity, Restock) - total(Sale.quantity, Sale)
+                + total(StockAdjustment.quantity, StockAdjustment))
+    return _stock_value(Decimal(quantity))
 
 
 @dataclass
 class StockLine:
     product_id: int
     name: str
-    stock: int
-    reorder_level: int
+    stock: int | Decimal
+    reorder_level: int | Decimal
 
     @property
     def below_reorder_level(self) -> bool:
@@ -84,20 +100,25 @@ def stock_levels(session: Session, shop_id: int) -> list[StockLine]:
 
     came_in, went_out, fixed = sums(Restock.quantity, Restock), sums(Sale.quantity, Sale), sums(StockAdjustment.quantity, StockAdjustment)
     products = session.scalars(select(Product).where(Product.shop_id == shop_id, Product.is_active).order_by(Product.name)).all()
-    return [StockLine(p.id, p.name, came_in.get(p.id, 0) - went_out.get(p.id, 0) + fixed.get(p.id, 0), p.reorder_level)
+    return [StockLine(p.id, p.name,
+                      _stock_value(Decimal(came_in.get(p.id, 0) - went_out.get(p.id, 0) + fixed.get(p.id, 0))),
+                      p.reorder_level)
             for p in products]
 
 
 # ---------------------------------------------------------------- the jobs
 def add_product(session: Session, shop_id: int, name: str, unit_cost: float, selling_price: float,
-                opening_stock: int = 0, reorder_level: int = 0, lead_time_days: int = 7,
-                expiry_date: date | None = None) -> Product:
-    _require_whole_quantity(opening_stock)
-    _require_whole_quantity(reorder_level)
+                opening_stock: int | float = 0, reorder_level: int | float = 0, lead_time_days: int = 7,
+                expiry_date: date | None = None, unit_name: str = "unit") -> Product:
+    opening_stock = _quantity_value(opening_stock)
+    reorder_level = _quantity_value(reorder_level)
     if unit_cost < 0 or selling_price < 0:
         raise ShopError("Prices cannot be negative.")
     if opening_stock < 0 or reorder_level < 0:
         raise ShopError("Opening stock and reorder level cannot be negative.")
+    unit_name = " ".join(unit_name.split())
+    if not unit_name:
+        raise ShopError("Product unit name cannot be empty.")
     try:
         get_product(session, shop_id, name)
     except ShopError:
@@ -106,7 +127,7 @@ def add_product(session: Session, shop_id: int, name: str, unit_cost: float, sel
         raise ShopError(f"'{name}' already exists in this shop.")
 
     product = Product(shop_id=shop_id, name=name, unit_cost=unit_cost, selling_price=selling_price,
-                      reorder_level=reorder_level, lead_time_days=lead_time_days)
+                      reorder_level=reorder_level, lead_time_days=lead_time_days, unit_name=unit_name)
     session.add(product)
     session.flush()                      # gives the product its id
     if opening_stock:
@@ -121,9 +142,16 @@ class SaleResult:
     warning: str | None = None           # something worth telling the owner, but NOT a reason to refuse the sale
 
 
-def record_sale(session: Session, product: Product, quantity: int, unit_price: float | None = None,
+@dataclass
+class CreditSaleResult:
+    sale: Sale
+    debt: CustomerDebt
+    warning: str | None = None
+
+
+def record_sale(session: Session, product: Product, quantity: int | float | Decimal, unit_price: float | None = None,
                 sold_at: datetime | None = None, customer: Customer | None = None) -> SaleResult:
-    _require_whole_quantity(quantity)
+    quantity = _quantity_value(quantity)
     if quantity <= 0:
         raise ShopError("Sale quantity must be positive. Use record_return() for returned items.")
     if customer is not None and customer.shop_id != product.shop_id:
@@ -146,9 +174,73 @@ def record_sale(session: Session, product: Product, quantity: int, unit_price: f
     return SaleResult(sale, warning)
 
 
-def record_return(session: Session, original_sale: Sale, quantity: int,
+def _debt_balance_kobo(session: Session, debt: CustomerDebt) -> int:
+    settled = session.scalar(
+        select(func.coalesce(func.sum(DebtEntry.amount_kobo), 0)).where(DebtEntry.debt_id == debt.id)
+    )
+    return debt.principal_kobo - int(settled)
+
+
+def record_credit_sale(session: Session, product: Product, customer: Customer,
+                       quantity: int | float | Decimal, due_date: date,
+                       unit_price: float | None = None, sold_at: datetime | None = None) -> CreditSaleResult:
+    """Record a customer sale and open a receivable for its full amount."""
+    if customer.id is None:
+        raise ShopError("Customer must be saved before recording a credit sale.")
+    if customer.shop_id != product.shop_id:
+        raise ShopError("Customer and product must belong to the same shop.")
+    if not customer.name or not customer.name.strip() or not customer.phone:
+        raise ShopError("Credit sales require a customer name and phone number.")
+    quantity = _quantity_value(quantity)
+    if quantity <= 0:
+        raise ShopError("Sale quantity must be positive. Use record_return() for returned items.")
+    sold_at = sold_at or datetime.now()
+    if due_date < sold_at.date():
+        raise ShopError("Debt due date cannot be before the sale date.")
+    price = product.selling_price if unit_price is None else unit_price
+    principal_kobo = int(
+        (quantity * to_kobo(price)).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+    )
+    if principal_kobo <= 0:
+        raise ShopError("A credit sale must have an amount greater than zero.")
+    result = record_sale(session, product, quantity, unit_price=price, sold_at=sold_at, customer=customer)
+    principal_kobo = int(
+        (Decimal(result.sale.quantity) * result.sale.unit_price_kobo).quantize(
+            Decimal("1"), rounding=ROUND_HALF_UP
+        )
+    )
+    debt = CustomerDebt(sale_id=result.sale.id, principal_kobo=principal_kobo, due_date=due_date)
+    session.add(debt)
+    session.flush()
+    return CreditSaleResult(result.sale, debt, result.warning)
+
+
+def record_debt_payment(session: Session, debt: CustomerDebt, amount: int | float | Decimal,
+                        paid_at: datetime | None = None, note: str | None = None) -> DebtEntry:
+    """Record a payment against one customer credit sale."""
+    if debt.id is None:
+        raise ShopError("Payment must reference a saved customer debt.")
+    debt = session.get(CustomerDebt, debt.id)
+    if debt is None:
+        raise ShopError("Customer debt was not found.")
+    amount_kobo = to_kobo(amount)
+    if amount_kobo <= 0:
+        raise ShopError("Payment amount must be greater than zero.")
+    balance_kobo = _debt_balance_kobo(session, debt)
+    if balance_kobo <= 0:
+        raise ShopError("This debt has no remaining balance.")
+    if amount_kobo > balance_kobo:
+        raise ShopError("Payment cannot exceed the remaining debt balance.")
+    entry = DebtEntry(debt_id=debt.id, amount_kobo=amount_kobo, kind="payment",
+                      recorded_at=paid_at or datetime.now(), note=note)
+    session.add(entry)
+    session.flush()
+    return entry
+
+
+def record_return(session: Session, original_sale: Sale, quantity: int | float | Decimal,
                   returned_at: datetime | None = None) -> SaleResult:
-    _require_whole_quantity(quantity)
+    quantity = _quantity_value(quantity)
     if quantity <= 0:
         raise ShopError("Return quantity must be positive.")
     if original_sale.id is None:
@@ -195,13 +287,24 @@ def record_return(session: Session, original_sale: Sale, quantity: int,
     )
     session.add(sale_return)
     session.flush()
+    debt = session.scalar(select(CustomerDebt).where(CustomerDebt.sale_id == original_sale.id))
+    if debt is not None:
+        return_credit_kobo = int(
+            (Decimal(quantity) * original_sale.unit_price_kobo).quantize(
+                Decimal("1"), rounding=ROUND_HALF_UP
+            )
+        )
+        if return_credit_kobo:
+            session.add(DebtEntry(debt_id=debt.id, amount_kobo=return_credit_kobo, kind="return_credit",
+                                  recorded_at=returned_at, note="Returned items"))
+            session.flush()
     return SaleResult(sale_return)
 
 
-def record_restock(session: Session, product: Product, quantity: int, unit_cost: float,
+def record_restock(session: Session, product: Product, quantity: int | float | Decimal, unit_cost: float,
                    received_on: date | None = None, expiry_date: date | None = None,
                    supplier: str | None = None) -> Restock:
-    _require_whole_quantity(quantity)
+    quantity = _quantity_value(quantity)
     if quantity <= 0:
         raise ShopError("A delivery must have a quantity above zero.")
     if unit_cost < 0:
@@ -217,10 +320,10 @@ def record_restock(session: Session, product: Product, quantity: int, unit_cost:
     return restock
 
 
-def record_adjustment(session: Session, product: Product, quantity: int, reason: str,
+def record_adjustment(session: Session, product: Product, quantity: int | float | Decimal, reason: str,
                       adjusted_on: date | None = None, note: str | None = None) -> StockAdjustment:
     """quantity is NEGATIVE when stock is lost, POSITIVE when found."""
-    _require_whole_quantity(quantity)
+    quantity = _quantity_value(quantity)
     if quantity == 0:
         raise ShopError("Adjustment cannot be zero.")
     if reason in {"damaged", "expired", "stolen"} and quantity > 0:

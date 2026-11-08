@@ -27,9 +27,9 @@ def stock_history(session: Session, shop_id: int, end) -> pd.DataFrame:
     parts = []
     for table, date_col, sign in ((Restock, Restock.received_on, 1), (StockAdjustment, StockAdjustment.adjusted_on, 1)):
         rows = session.execute(select(table.product_id, date_col, table.quantity).where(table.shop_id == shop_id)).all()
-        parts += [(pid, pd.Timestamp(d), sign * q) for pid, d, q in rows]
+        parts += [(pid, pd.Timestamp(d), sign * float(q)) for pid, d, q in rows]
     rows = session.execute(select(Sale.product_id, Sale.sold_at, Sale.quantity).where(Sale.shop_id == shop_id)).all()
-    parts += [(pid, pd.Timestamp(d).normalize(), -q) for pid, d, q in rows]
+    parts += [(pid, pd.Timestamp(d).normalize(), -float(q)) for pid, d, q in rows]
     if not parts:
         return pd.DataFrame()
     ev = pd.DataFrame(parts, columns=["pid", "date", "delta"]).groupby(["date", "pid"])["delta"].sum().unstack(fill_value=0)
